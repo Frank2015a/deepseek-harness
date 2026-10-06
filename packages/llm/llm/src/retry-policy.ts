@@ -21,6 +21,14 @@ const DEFAULT_RETRYABLE_CODES = Object.freeze([
   'SERVER',
   'TIMEOUT',
   'TRANSPORT',
+  // Stream-level degenerate completions: a malformed tool-call argument is a
+  // sampling artifact of one completion (the identical request typically
+  // succeeds on re-issue), and a stream that ends before message_stop is the
+  // same transient class as TRANSPORT/TIMEOUT. Terminating the turn on the
+  // first occurrence converts a one-off model hiccup into a user-visible
+  // failure of the whole agent turn.
+  'MALFORMED_RESPONSE',
+  'STREAM_CLOSED',
 ])
 
 /** Bounded exponential backoff with symmetric jitter around each local delay. */
