@@ -52,6 +52,13 @@ export const DEFAULT_MAX_INSTRUCTION_BYTES = 32_768
 // Keep one additional second for the process-close event that proves the old
 // generation is gone; timing out fails closed instead of overlapping children.
 const GENERATION_CLOSE_TIMEOUT_MS = 5_000
+/**
+ * Probe cadence after the reconnect budget is exhausted. Instead of staying
+ * dead until a manual reload/restart, keep one slow probe in flight: tools
+ * stay unregistered until a probe actually connects, and the existing
+ * stability-window budget reset re-arms full-speed backoff after recovery.
+ */
+const GIVE_UP_PROBE_MS = 5 * 60_000
 
 /** Fully resolved reconnect policy captured at plugin load. */
 export type ResolvedReconnectPolicy = Readonly<Required<ReconnectConfig>>
@@ -230,7 +237,19 @@ export function startConnection(ctx: Context, config: Config, policy: ResolvedRe
         disposers = new Map()
         serverInstructions = ''
       })
-      ctx.logger.error(`${label}: giving up after ${policy.maxAttempts} consecutive failed reconnect attempts — tools unregistered; reload the plugin or restart the Host to reconnect`)
+      ctx.logger.error(`${label}: giving up after ${policy.maxAttempts} consecutive failed reconnect attempts — tools unregistered; will keep probing every ${Math.round(GIVE_UP_PROBE_MS / 1000)}s and re-register automatically once the server is reachable again`)
+      // Slow reprobe instead of a permanent stop: without this, a transient
+      // outage that exhausts the budget leaves the plugin dead until a manual
+      // reload or Host restart. Tools stay unregistered while down, so a probe
+      // that fails changes nothing; one that connects re-registers via the
+      // normal initial sync, and the stability-window budget reset above
+      // re-arms full-speed backoff for any subsequent outage.
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = undefined
+        settling = connectGeneration(false)
+      }, GIVE_UP_PROBE_MS)
+      // A probe timer must never hold the process open on its own.
+      reconnectTimer.unref()
       return
     }
     const delayMs = Math.min(policy.maxDelayMs, policy.initialDelayMs * 2 ** (failedAttempts - 1))
